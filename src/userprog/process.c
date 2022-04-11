@@ -14,7 +14,6 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
-#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
@@ -40,16 +39,13 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Parse the string of file_name. 
-     Here, file_name is first copied to dynamically allocated token, 
-     which will be deallocated after no longer needed. */
-  char *token = malloc (strlen (fn_copy) + 1), *save_ptr;
-  strlcpy (token, fn_copy, strlen (fn_copy) + 1);
-  token = strtok_r (token, " ", &save_ptr);
+  /* Parse the string of file_name. */
+  char token_raw [strlen (file_name) + 1], *token, *save_ptr;
+  strlcpy (token_raw, file_name, strlen (file_name) + 1);
+  token = strtok_r (token_raw, " ", &save_ptr);
 
   /* Create a new thread to execute FILE_NAME. */
   tid = thread_create (token, PRI_DEFAULT, start_process, fn_copy);
-  free (token);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -64,15 +60,14 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
-  /* Parse the string of file_name. 
-     Similarly, file_name is first copied to dynamically allocated token,
-     which will be deallocated when no longer needed. */
-  char *token = malloc (strlen (file_name) + 1), *save_ptr, *argv[100], *iter;
+  /* Parse the string of file_name. */
+  char token_raw [strlen (file_name) + 1], *token, *save_ptr, *argv[100];
+  strlcpy (token_raw, file_name, strlen (file_name) + 1);
   int argc = 0;
-  strlcpy (token, file_name, strlen (file_name) + 1);
-  for (iter = strtok_r (token, " ", &save_ptr); iter != NULL; iter = strtok_r (NULL, " ", &save_ptr))
+  for (token = strtok_r (token_raw, " ", &save_ptr); token != NULL; 
+    token = strtok_r (NULL, " ", &save_ptr))
     {
-      argv[argc] = iter;
+      argv[argc] = token;
       argc++;
     }
 
@@ -88,21 +83,21 @@ start_process (void *file_name_)
   if (!success) 
     thread_exit ();
 
-  /* Save tokens on the user stack of the new process. */
-  bool stack = argument_stack (argv, argc, &if_.esp);
+  /* Save tokens on the user stack of the new process.
+     For checking, we can set this as bool stack. */
+  argument_stack (argv, argc, &if_.esp);
 
   /* Prints the parsed arguments, success status of argument passing,
      and the esp as in PintOS Project PPT slide 35. */
-  for (int k = 0; k < argc; k++)
-    printf("'%s'\n", argv[k]);
-  printf ("Success : %d\n", stack);
-  printf ("esp : %p\n", if_.esp);
-  free (token);
+  //for (int k = 0; k < argc; k++)
+    //printf("'%s'\n", argv[k]);
+  //printf ("Success : %d\n", stack);
+  //printf ("esp : %p\n", if_.esp);
 
   /* Print the program's stack by using hex_dump().
      - Print memory dump in hexadecimal form.
      - Check if arguments are correctly pushed on user stack. */
-  hex_dump ((int) if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+  //hex_dump ((int) if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -253,15 +248,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
-  /* Parse the string of file_name. 
-     Similarly, file_name is first copied to dynamically allocated token,
-     which will be deallocated when no longer needed. */
-  char *token = malloc (strlen (file_name) + 1), *save_ptr, *argv[100], *iter;
+  /* Parse the string of file_name. */
+  char token_raw [strlen (file_name) + 1], *token, *save_ptr, *argv[100];
+  strlcpy (token_raw, file_name, strlen (file_name) + 1);
   int argc = 0;
-  strlcpy (token, file_name, strlen (file_name) + 1);
-  for (iter = strtok_r (token, " ", &save_ptr); iter != NULL; iter = strtok_r (NULL, " ", &save_ptr))
+  for (token = strtok_r (token_raw, " ", &save_ptr); token != NULL; 
+    token = strtok_r (NULL, " ", &save_ptr))
     {
-      argv[argc] = iter;
+      argv[argc] = token;
       argc++;
     }
 
@@ -362,7 +356,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  free (token);
   file_close (file);
   return success;
 }

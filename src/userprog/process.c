@@ -21,7 +21,7 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
-static void argument_stack (char **argv, int argc, void **esp);
+static bool argument_stack (char *argv[], int argc, void **esp);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -75,7 +75,6 @@ start_process (void *file_name_)
       argv[argc] = iter;
       argc++;
     }
-  free (token);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -90,12 +89,20 @@ start_process (void *file_name_)
     thread_exit ();
 
   /* Save tokens on the user stack of the new process. */
-  argument_stack (argv, argc, &if_.esp);
+  bool stack = argument_stack (argv, argc, &if_.esp);
+
+  /* Prints the parsed arguments, success status of argument passing,
+     and the esp as in PintOS Project PPT slide 35. */
+  for (int k = 0; k < argc; k++)
+    printf("'%s'\n", argv[k]);
+  printf ("Success : %d\n", stack);
+  printf ("esp : %p\n", if_.esp);
+  free (token);
 
   /* Print the program's stack by using hex_dump().
      - Print memory dump in hexadecimal form.
      - Check if arguments are correctly pushed on user stack. */
-  hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
+  hex_dump ((int) if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -354,8 +361,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
   success = true;
 
  done:
-  free (token);
   /* We arrive here whether the load is successful or not. */
+  free (token);
   file_close (file);
   return success;
 }
@@ -508,12 +515,12 @@ install_page (void *upage, void *kpage, bool writable)
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
 
-/* Sets up the user stack of the new process.
+/* Continues setting up user stack of the new process after setup_stack().
    Pushes arguments (character strings from right to left, places padding
-   when necessary, put start address of char strings), pushes argc and argv,
-   and pushes the address of the next instruction (return address). */
-static void
-argument_stack (char **argv, int argc, void **esp)
+   when necessary, put start address of char strings), pushes argv and argc,
+   and pushes the address of the next instruction (fake return address). */
+static bool
+argument_stack (char *argv[], int argc, void **esp)
 {
   char *argdress[argc];
   *esp = PHYS_BASE;
@@ -562,4 +569,7 @@ argument_stack (char **argv, int argc, void **esp)
   *esp = (char *) *esp - sizeof (void *);
   void *fake_ret = 0;
   memcpy (*esp, &fake_ret, sizeof (void *));
+
+  /* Returns true if reaches here with no problem. */
+  return true;
 }

@@ -14,12 +14,14 @@
 #include "threads/flags.h"
 #include "threads/init.h"
 #include "threads/interrupt.h"
+#include "threads/malloc.h"
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void argument_stack (char **argv, int argc, void **esp);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -38,8 +40,16 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  /* Parse the string of file_name. 
+     Here, file_name is first copied to dynamically allocated token, 
+     which will be deallocated after no longer needed. */
+  char *token = malloc (strlen (fn_copy) + 1), *save_ptr;
+  strlcpy (token, fn_copy, strlen (fn_copy) + 1);
+  token = strtok_r (token, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create (token, PRI_DEFAULT, start_process, fn_copy);
+  free (token);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -54,6 +64,19 @@ start_process (void *file_name_)
   struct intr_frame if_;
   bool success;
 
+  /* Parse the string of file_name. 
+     Similarly, file_name is first copied to dynamically allocated token,
+     which will be deallocated when no longer needed. */
+  char *token = malloc (strlen (file_name) + 1), *save_ptr, *argv[100], *iter;
+  int argc = 0;
+  strlcpy (token, file_name, strlen (file_name) + 1);
+  for (iter = strtok_r (token, " ", &save_ptr); iter != NULL; iter = strtok_r (NULL, " ", &save_ptr))
+    {
+      argv[argc] = iter;
+      argc++;
+    }
+  free (token);
+
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
@@ -65,6 +88,14 @@ start_process (void *file_name_)
   palloc_free_page (file_name);
   if (!success) 
     thread_exit ();
+
+  /* Save tokens on the user stack of the new process. */
+  argument_stack (argv, argc, &if_.esp);
+
+  /* Print the program's stack by using hex_dump().
+     - Print memory dump in hexadecimal form.
+     - Check if arguments are correctly pushed on user stack. */
+  hex_dump (if_.esp, if_.esp, PHYS_BASE - if_.esp, true);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -215,6 +246,18 @@ load (const char *file_name, void (**eip) (void), void **esp)
   bool success = false;
   int i;
 
+  /* Parse the string of file_name. 
+     Similarly, file_name is first copied to dynamically allocated token,
+     which will be deallocated when no longer needed. */
+  char *token = malloc (strlen (file_name) + 1), *save_ptr, *argv[100], *iter;
+  int argc = 0;
+  strlcpy (token, file_name, strlen (file_name) + 1);
+  for (iter = strtok_r (token, " ", &save_ptr); iter != NULL; iter = strtok_r (NULL, " ", &save_ptr))
+    {
+      argv[argc] = iter;
+      argc++;
+    }
+
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
   if (t->pagedir == NULL) 
@@ -222,10 +265,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
   process_activate ();
 
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (argv[0]);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", argv[0]);
       goto done; 
     }
 
@@ -238,7 +281,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", argv[0]);
       goto done; 
     }
 
@@ -311,6 +354,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   success = true;
 
  done:
+  free (token);
   /* We arrive here whether the load is successful or not. */
   file_close (file);
   return success;
@@ -462,4 +506,60 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+/* Sets up the user stack of the new process.
+   Pushes arguments (character strings from right to left, places padding
+   when necessary, put start address of char strings), pushes argc and argv,
+   and pushes the address of the next instruction (return address). */
+static void
+argument_stack (char **argv, int argc, void **esp)
+{
+  char *argdress[argc];
+  *esp = PHYS_BASE;
+
+  /* In the following, the size of char and uint8_t is 1 while that for
+     int, char *, and char ** is 4. */
+  /* Push char strings argv[0], argv[1], ..., argv[argc-1] from 
+     right to left. */
+  for (int i = argc-1; i >= 0; i--)
+    {
+      *esp = (char *) *esp - (strlen(argv[i]) + 1);
+      argdress[i] = (char *) *esp;
+      memcpy (*esp, argv[i], (strlen(argv[i]) + 1));
+    }
+  
+  /* Place padding when necessary to align by 4 Byte. */
+  while ((int) *esp % 4 != 0)
+    {
+      *esp = (uint8_t *) *esp - sizeof (uint8_t);
+      uint8_t padding = 0;
+      memcpy (*esp, &padding, sizeof (uint8_t));
+    }
+
+  /* Push start address of argv[argc] as 0. */
+  *esp = (char *) *esp - sizeof (char *);
+  char *argend = 0;
+  memcpy (*esp, &argend, sizeof(char *));
+
+  /* Push start address of argv[argc-1] ... argv[0]. */
+  for (int j = argc-1; j >= 0; j--)
+    {
+      *esp = (char *) *esp - sizeof (char *);
+      memcpy (*esp, &argdress[j], sizeof (char *));
+    }
+
+  /* Push argv. */
+  char **argtop = *esp;
+  *esp = (char *) *esp - sizeof (char **);
+  memcpy (*esp, &argtop, sizeof (char **));
+
+  /* Push argc. */
+  *esp = (char *) *esp - sizeof (int);
+  memcpy (*esp, &argc, sizeof (int));
+
+  /* Push fake return address for the new process (i.e., 0). */
+  *esp = (char *) *esp - sizeof (void *);
+  void *fake_ret = 0;
+  memcpy (*esp, &fake_ret, sizeof (void *));
 }
